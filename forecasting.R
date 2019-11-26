@@ -48,6 +48,15 @@ tca_counts$lag1mo_concerts = lag(tca_counts$concertReach, +1)
 #econ variables
 econ <- import("econ_indicators_BLS.xlsx") 
 econ= econ%>% filter(Month>='2014-12-31') %>% mutate(month=as.Date(Month))
+econ$lag1mo_SP500 = lag(econ$S.P.500.Avg.Close, +1)
+econ$lag2mo_SP500 = lag(econ$S.P.500.Avg.Close, +2)
+econ$lag1mo_TotalEmploy = lag(econ$Total...of.Employees..1000s., +1)
+econ$lag2mo_TotalEmploy = lag(econ$Total...of.Employees..1000s., +2)
+econ$lag1mo_CCI = lag(econ$ConsumerConfidIndex, +1)
+econ$lag2mo_CCI = lag(econ$ConsumerConfidIndex, +2)
+econ = dplyr::select(econ, -c(SP500.2m:CCI.6m))
+
+
 
 
 ## open database connection
@@ -227,10 +236,19 @@ ggplot(both, aes(x=(month), y=value, color=var))+
 ### 3) Forecasting net new sponsorships
 net$wc_appeal = ifelse(net$month %in% wc_dates$month, 1, 0)
 net$month = as.Date(net$month, format="%Y-%m-%d")
+net$F2F = ifelse(net$month >'2016-01-01' & net$month<'2019-04-01', 0, 1)
 data = merge(net, econ, by="month", all.x=T)
 data = merge(data, tca_counts, by="month", all.x=T)
 data = data %>% filter(year(month)<=2019 & year(month)>=2015)
 data[is.na(data)]<-0
+
+
+corr.df = data[complete.cases(data),c(2:4, 8:25, 32:38)]
+M <-cor(corr.df)
+corrplot(M, type = "upper", method="circle",
+         tl.col = "black", tl.srt =90)
+
+
 fc_ts =  ts(data[,-1], start = c(2015, 1), frequency = 12)
 tail(fc_ts)
 
@@ -268,22 +286,30 @@ table(net$wc_appeal)
 arima_train = window(fc_ts, start=c(2015,10), end=c(2019, 05))
 
 xreg <- cbind(wc_appeal = arima_train[, "wc_appeal"],
-                    S.P.500.Avg.Close =arima_train[,"S.P.500.Avg.Close"],
-                    TotalEmployees = arima_train[,"Total...of.Employees..1000s."],
+                    S.P.500.Avg.Close =arima_train[,"lag1mo_SP500"],
+                    # YoYDeltaJobs = arima_train[,"YoYNetDeltaJobs"],
+                    TotalEmployees = arima_train[,"lag1mo_TotalEmploy"],
+                    # F2F = arima_train[,"F2F"],
+                    # U6= arima_train[,"U6.Unemp.Rate"],
                     Concerts = arima_train[,"concertReach"])
 # Rec_prob = arima_train[,"Rec_prob"])
 arima_test = window(fc_ts, start=c(2019,06), end=c(2019, 10))
 
 xreg_test <- cbind(wc_appeal = arima_test[, "wc_appeal"],
-                   S.P.500.Avg.Close =arima_test[,"S.P.500.Avg.Close"],
-                   TotalEmployees = arima_test[,"Total...of.Employees..1000s."],
+                   S.P.500.Avg.Close =arima_test[,"lag1mo_SP500"],
+                   # YoYDeltaJobs = arima_train[,"YoYNetDeltaJobs"],
+                   TotalEmployees = arima_test[,"lag1mo_TotalEmploy"],
+                   # F2F = arima_test[,"F2F"],
+                   # U6= arima_train[,"U6.Unemp.Rate"],
                    Concerts = arima_test[,"concertReach"])
 # Rec_prob = arima_train[,"Rec_prob"])
 
 
 ############### Total Volume ARIMA
 fit.arima <- auto.arima(arima_train[,"new_spon"], xreg = xreg) 
-
+fit.fourier <- auto.arima(arima_train[,"new_spon"], xreg = fourier(xreg, K=c(1)), seasonal=TRUE)
+manual.arima <- Arima(arima_train[,"new_spon"], xreg=xreg, order=c(5,0,0), seasonal=c(0,0,0)) 
+manual.arima %>% checkresiduals()
 # 
 # xpred = (model_data %>% filter(yr %in% c(2016, 2017,2018)) %>% group_by(mo) %>% 
 #            summarize(S.P.500.Avg.Close = mean(S.P.500.Avg.Close),
@@ -303,12 +329,16 @@ fit.arima <- auto.arima(arima_train[,"new_spon"], xreg = xreg)
 # xpred_test = as.matrix(xpred_test)
 
 
-# Forecast fit year ahead
+# Forecast fit year ahea
 fc_2019_tot = forecast(fit.arima, xreg=xreg_test)
+fourier <- fit.fourier %>% forecast(xreg=fourier(xreg_test, K=c(1), h=20))
+fourier %>% autoplot()
+fourier %>% checkresiduals()
 fc_2019_tot %>% autoplot()
 fc_2019_tot %>% checkresiduals()
 
 test = window(fc_ts, start=c(2019,06), end=c(2019, 10))
 accuracy(fc_2019_tot, data$new_spon[54:58])
 
-fc_2019_tot_full = forecast(fit.arima, xreg = xpred_full)
+accuracy(fourier, data$new_spon[54:58])
+
